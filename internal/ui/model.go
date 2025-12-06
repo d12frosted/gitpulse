@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -12,6 +13,8 @@ import (
 	"github.com/d12frosted/gitpulse/internal/config"
 	"github.com/d12frosted/gitpulse/internal/git"
 )
+
+const refreshInterval = 30 * time.Second
 
 // Messages
 type statusUpdatedMsg struct {
@@ -35,6 +38,8 @@ type pushCompleteMsg struct {
 }
 
 type fetchAllCompleteMsg struct{}
+
+type refreshTickMsg time.Time
 
 type remotesLoadedMsg struct {
 	index    int
@@ -166,7 +171,10 @@ func (m *Model) selectedIndex() int {
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.spinner.Tick}
+	cmds := []tea.Cmd{
+		m.spinner.Tick,
+		m.scheduleRefresh(),
+	}
 
 	// Refresh all statuses on start
 	for i, repo := range m.repos {
@@ -174,6 +182,12 @@ func (m Model) Init() tea.Cmd {
 	}
 
 	return tea.Batch(cmds...)
+}
+
+func (m Model) scheduleRefresh() tea.Cmd {
+	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
+		return refreshTickMsg(t)
+	})
 }
 
 func (m *Model) refreshStatus(index int, repo config.RepoConfig) tea.Cmd {
@@ -327,6 +341,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case refreshTickMsg:
+		// Periodic background refresh - only if not busy
+		if !m.fetchingAll && m.modalType == ModalNone {
+			cmds := []tea.Cmd{m.scheduleRefresh()}
+			for i, repo := range m.repos {
+				if !m.statuses[i].Fetching && !m.statuses[i].Rebasing && !m.statuses[i].Pushing {
+					cmds = append(cmds, m.refreshStatus(i, repo))
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+		return m, m.scheduleRefresh()
 
 	case statusUpdatedMsg:
 		if msg.index < len(m.statuses) {
