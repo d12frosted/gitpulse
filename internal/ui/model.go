@@ -208,11 +208,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "f":
 			// Fetch single repo
 			idx := m.selectedIndex()
-			if !m.statuses[idx].Fetching {
-				m.statuses[idx].Fetching = true
-				m.statuses[idx].LastMessage = ""
-				return m, m.fetchRepo(idx)
+			status := m.statuses[idx]
+			if status.Fetching {
+				return m, nil
 			}
+			// DWIM: If no upstream, show modal to set one
+			if !status.HasUpstream && status.Error == nil {
+				return m, m.showUpstreamModal(idx, false)
+			}
+			status.Fetching = true
+			status.LastMessage = ""
+			return m, m.fetchRepo(idx)
 
 		case "F":
 			// Fetch all repos
