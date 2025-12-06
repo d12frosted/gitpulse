@@ -65,6 +65,7 @@ const (
 type UpstreamOption struct {
 	Remote string
 	Branch string
+	Exists bool // true if remote branch exists, false if needs push -u
 }
 
 // Model
@@ -268,9 +269,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "p":
 			// Push single repo
 			idx := m.selectedIndex()
-			if !m.statuses[idx].Pushing && m.statuses[idx].NeedsPush() {
-				m.statuses[idx].Pushing = true
-				m.statuses[idx].LastMessage = ""
+			status := m.statuses[idx]
+			if status.Pushing {
+				return m, nil
+			}
+			// If no upstream, show modal to push & set upstream
+			if !status.HasUpstream && status.Error == nil {
+				return m, m.showUpstreamModal(idx, false)
+			}
+			if status.NeedsPush() {
+				status.Pushing = true
+				status.LastMessage = ""
 				return m, m.pushRepo(idx)
 			}
 
@@ -394,21 +403,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var options []UpstreamOption
 		branch := m.statuses[msg.index].Branch
 
-		// First, add exact matches (remote has same branch name)
+		// First, add exact matches (remote has same branch name) - these exist
 		for _, rb := range msg.branches {
-			options = append(options, UpstreamOption{Remote: rb.Remote, Branch: rb.Branch})
+			options = append(options, UpstreamOption{Remote: rb.Remote, Branch: rb.Branch, Exists: true})
 		}
 
-		// If no exact matches, suggest creating on each remote
+		// If no exact matches, suggest pushing to each remote - these need push -u
 		if len(options) == 0 {
 			for _, remote := range msg.remotes {
-				options = append(options, UpstreamOption{Remote: remote.Name, Branch: branch})
+				options = append(options, UpstreamOption{Remote: remote.Name, Branch: branch, Exists: false})
 			}
-		}
-
-		if len(options) == 0 {
-			m.statuses[msg.index].LastMessage = "no remote branches found"
-			return m, nil
 		}
 
 		m.modalType = ModalSetUpstream
@@ -489,7 +493,12 @@ func (m Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			opt := m.modalOptions[m.modalCursor]
 			m.modalType = ModalNone
 			m.modalOptions = nil
-			return m, m.setUpstream(m.modalRepoIndex, opt.Remote, opt.Branch)
+			if opt.Exists {
+				return m, m.setUpstream(m.modalRepoIndex, opt.Remote, opt.Branch)
+			}
+			// Remote branch doesn't exist - push with -u to create it
+			m.statuses[m.modalRepoIndex].Pushing = true
+			return m, m.pushWithUpstream(m.modalRepoIndex, opt.Remote, opt.Branch)
 		}
 	}
 
@@ -540,6 +549,14 @@ func (m *Model) setUpstream(index int, remote, branch string) tea.Cmd {
 	return func() tea.Msg {
 		err := git.SetUpstream(path, remote, branch)
 		return upstreamSetMsg{index: index, err: err}
+	}
+}
+
+func (m *Model) pushWithUpstream(index int, remote, branch string) tea.Cmd {
+	path := m.repos[index].Path
+	return func() tea.Msg {
+		err := git.PushWithUpstream(path, remote, branch)
+		return pushCompleteMsg{index: index, err: err}
 	}
 }
 
@@ -787,7 +804,12 @@ func (m Model) renderModal(width int) string {
 				cursor = "▸ "
 				style = lipgloss.NewStyle().Bold(true).Foreground(t.Selected)
 			}
-			optStr := fmt.Sprintf("%s/%s", opt.Remote, opt.Branch)
+			var optStr string
+			if opt.Exists {
+				optStr = fmt.Sprintf("track %s/%s", opt.Remote, opt.Branch)
+			} else {
+				optStr = fmt.Sprintf("push & track %s/%s", opt.Remote, opt.Branch)
+			}
 			lines = append(lines, cursor+style.Render(optStr))
 		}
 

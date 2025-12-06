@@ -222,6 +222,12 @@ func SetUpstream(path, remote, branch string) error {
 	return err
 }
 
+// PushWithUpstream pushes the current branch and sets upstream tracking
+func PushWithUpstream(path, remote, branch string) error {
+	_, err := runGit(path, "push", "-u", remote, branch)
+	return err
+}
+
 // AddRemote adds a new remote to the repository
 func AddRemote(path, name, url string) error {
 	_, err := runGit(path, "remote", "add", name, url)
