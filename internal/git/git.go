@@ -3,7 +3,9 @@ package git
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -41,10 +43,32 @@ func GetStatus(path, name string) *RepoStatus {
 		Name: name,
 	}
 
+	// Check if path exists
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		status.Error = fmt.Errorf("path does not exist")
+		return status
+	}
+	if err != nil {
+		status.Error = fmt.Errorf("cannot access path")
+		return status
+	}
+	if !info.IsDir() {
+		status.Error = fmt.Errorf("not a directory")
+		return status
+	}
+
+	// Check if it's a git repo
+	gitDir := filepath.Join(path, ".git")
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+		status.Error = fmt.Errorf("not a git repo")
+		return status
+	}
+
 	// Get current branch
 	branch, err := runGit(path, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
-		status.Error = fmt.Errorf("not a git repo or no commits")
+		status.Error = fmt.Errorf("no commits yet")
 		return status
 	}
 	status.Branch = strings.TrimSpace(branch)
