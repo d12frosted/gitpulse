@@ -17,6 +17,7 @@ type RepoStatus struct {
 	Upstream     string
 	Ahead        int
 	Behind       int
+	Dirty        bool
 	HasUpstream  bool
 	Error        error
 	Fetching     bool
@@ -72,6 +73,10 @@ func GetStatus(path, name string) *RepoStatus {
 		return status
 	}
 	status.Branch = strings.TrimSpace(branch)
+
+	// Check for uncommitted changes
+	porcelain, _ := runGit(path, "status", "--porcelain")
+	status.Dirty = strings.TrimSpace(porcelain) != ""
 
 	// Get upstream
 	upstream, err := runGit(path, "rev-parse", "--abbrev-ref", "@{upstream}")

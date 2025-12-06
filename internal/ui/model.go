@@ -327,10 +327,14 @@ func (m Model) View() string {
 			statusStr = " " + strings.Join(parts, " ")
 		}
 
-		// Branch
+		// Branch + dirty indicator
 		branch := ""
 		if status.Branch != "" {
-			branch = dimStyle.Render(" [" + status.Branch + "]")
+			dirty := ""
+			if status.Dirty {
+				dirty = aheadStyle.Render("*")
+			}
+			branch = dimStyle.Render(" ["+status.Branch+"]") + dirty
 		}
 
 		// Last message
