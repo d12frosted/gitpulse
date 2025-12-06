@@ -206,7 +206,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "f":
-			// Fetch all
+			// Fetch single repo
+			idx := m.selectedIndex()
+			if !m.statuses[idx].Fetching {
+				m.statuses[idx].Fetching = true
+				m.statuses[idx].LastMessage = ""
+				return m, m.fetchRepo(idx)
+			}
+
+		case "F":
+			// Fetch all repos
 			if !m.fetchingAll {
 				m.fetchingAll = true
 				cmds := make([]tea.Cmd, 0, len(m.repos))
@@ -217,8 +226,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmds...)
 			}
 
-		case "enter", " ":
-			// Fetch + pull current repo
+		case "s":
+			// Sync (fetch + pull) single repo
 			idx := m.selectedIndex()
 			status := m.statuses[idx]
 			if status.Fetching || status.Rebasing {
@@ -232,13 +241,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			status.LastMessage = ""
 			return m, m.fetchAndPull(idx)
 
+		case "S":
+			// Sync all repos
+			if !m.fetchingAll {
+				m.fetchingAll = true
+				cmds := make([]tea.Cmd, 0, len(m.repos))
+				for i := range m.repos {
+					status := m.statuses[i]
+					if status.HasUpstream && status.Error == nil {
+						status.Fetching = true
+						cmds = append(cmds, m.fetchAndPull(i))
+					}
+				}
+				if len(cmds) > 0 {
+					return m, tea.Batch(cmds...)
+				}
+				m.fetchingAll = false
+			}
+
 		case "p":
-			// Push current repo
+			// Push single repo
 			idx := m.selectedIndex()
 			if !m.statuses[idx].Pushing && m.statuses[idx].NeedsPush() {
 				m.statuses[idx].Pushing = true
 				m.statuses[idx].LastMessage = ""
 				return m, m.pushRepo(idx)
+			}
+
+		case "P":
+			// Push all repos that need pushing
+			cmds := make([]tea.Cmd, 0)
+			for i := range m.repos {
+				status := m.statuses[i]
+				if !status.Pushing && status.NeedsPush() {
+					status.Pushing = true
+					status.LastMessage = ""
+					cmds = append(cmds, m.pushRepo(i))
+				}
+			}
+			if len(cmds) > 0 {
+				return m, tea.Batch(cmds...)
 			}
 
 		case "r":
@@ -666,9 +708,9 @@ func (m Model) View() string {
 
 	// Build help line
 	helpItems := []struct{ key, desc string }{
-		{"f", "fetch"},
-		{"⏎", "sync"},
-		{"p", "push"},
+		{"f/F", "fetch"},
+		{"s/S", "sync"},
+		{"p/P", "push"},
 		{"u", "upstream"},
 		{"r", "refresh"},
 		{"g", "group"},
