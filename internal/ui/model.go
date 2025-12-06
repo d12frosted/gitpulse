@@ -65,6 +65,7 @@ func NewModel(repos []config.RepoConfig) Model {
 		repos:    repos,
 		statuses: statuses,
 		spinner:  s,
+		grouped:  true,
 	}
 }
 
