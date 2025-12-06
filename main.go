@@ -35,7 +35,7 @@ func main() {
 	repos := cfg.RepoConfigs()
 
 	p := tea.NewProgram(
-		ui.NewModel(repos),
+		ui.NewModel(repos, cfg.Theme),
 		tea.WithAltScreen(),
 	)
 

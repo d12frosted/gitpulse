@@ -46,12 +46,15 @@ type Model struct {
 	fetchingAll bool
 	grouped     bool
 	quitting    bool
+	theme       Theme
 }
 
-func NewModel(repos []config.RepoConfig) Model {
+func NewModel(repos []config.RepoConfig, themeName string) Model {
+	theme := GetTheme(themeName)
+
 	s := spinner.New()
 	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	s.Style = lipgloss.NewStyle().Foreground(theme.Spinner)
 
 	statuses := make([]*git.RepoStatus, len(repos))
 	for i, repo := range repos {
@@ -66,6 +69,7 @@ func NewModel(repos []config.RepoConfig) Model {
 		statuses: statuses,
 		spinner:  s,
 		grouped:  true,
+		theme:    theme,
 	}
 }
 
@@ -298,128 +302,175 @@ func (m Model) View() string {
 		return ""
 	}
 
-	var b strings.Builder
+	// Use terminal width, with some padding
+	width := m.width
+	if width < 60 {
+		width = 80
+	}
+	innerWidth := width - 4 // account for border + padding
 
-	// Styles
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("205")).
-		MarginBottom(1)
+	// Theme colors
+	t := m.theme
 
-	selectedStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("212"))
-
-	normalStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252"))
-
-	dimStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
-
-	syncedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("42"))
-
-	aheadStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("214"))
-
-	behindStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("204"))
-
-	errorStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("196"))
-
-	messageStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("245")).
-		Italic(true)
-
-	// Title
-	b.WriteString(titleStyle.Render("  gitpulse"))
-	b.WriteString("\n\n")
-
-	// Calculate max name length for alignment
+	// Calculate column widths
 	maxNameLen := 0
-	for _, repo := range m.repos {
-		if len(repo.Name) > maxNameLen {
-			maxNameLen = len(repo.Name)
+	maxBranchLen := 0
+	for _, s := range m.statuses {
+		if len(s.Name) > maxNameLen {
+			maxNameLen = len(s.Name)
+		}
+		if len(s.Branch) > maxBranchLen {
+			maxBranchLen = len(s.Branch)
 		}
 	}
+	if maxBranchLen > 14 {
+		maxBranchLen = 14
+	}
 
-	// Repos list
+	// Build repo lines
+	var lines []string
 	order := m.displayOrder()
 	for displayIdx, repoIdx := range order {
 		status := m.statuses[repoIdx]
-		cursor := "  "
-		style := normalStyle
-		if displayIdx == m.cursor {
-			cursor = "▸ "
-			style = selectedStyle
+		isSelected := displayIdx == m.cursor
+
+		var parts []string
+
+		// Cursor
+		if isSelected {
+			parts = append(parts, lipgloss.NewStyle().Foreground(t.Selected).Render("▸"))
+		} else {
+			parts = append(parts, " ")
 		}
 
-		// Name (padded)
+		// Name
 		name := fmt.Sprintf("%-*s", maxNameLen, status.Name)
+		if isSelected {
+			parts = append(parts, lipgloss.NewStyle().Bold(true).Foreground(t.Selected).Render(name))
+		} else {
+			parts = append(parts, lipgloss.NewStyle().Foreground(t.RepoName).Render(name))
+		}
 
-		// Status indicator
+		// Branch
+		branch := status.Branch
+		if len(branch) > maxBranchLen {
+			branch = branch[:maxBranchLen-1] + "…"
+		}
+		branchStr := fmt.Sprintf("%-*s", maxBranchLen, branch)
+		parts = append(parts, lipgloss.NewStyle().Foreground(t.Branch).Render(branchStr))
+
+		// Dirty
+		if status.Dirty {
+			parts = append(parts, lipgloss.NewStyle().Bold(true).Foreground(t.Ahead).Render("*"))
+		} else {
+			parts = append(parts, " ")
+		}
+
+		// Status
+		statusWidth := 12
 		var statusStr string
 		if status.Error != nil {
-			statusStr = errorStyle.Render(" ✗ " + status.Error.Error())
+			errMsg := status.Error.Error()
+			if len(errMsg) > statusWidth-2 {
+				errMsg = errMsg[:statusWidth-3] + "…"
+			}
+			statusStr = lipgloss.NewStyle().Foreground(t.Error).Render(fmt.Sprintf("✗ %-*s", statusWidth-2, errMsg))
 		} else if status.Fetching {
-			statusStr = dimStyle.Render(" " + m.spinner.View() + " fetching...")
+			statusStr = lipgloss.NewStyle().Foreground(t.Spinner).Render(m.spinner.View()+" fetch…")
+			statusStr = fmt.Sprintf("%-*s", statusWidth, statusStr)
 		} else if status.Rebasing {
-			statusStr = dimStyle.Render(" " + m.spinner.View() + " rebasing...")
+			statusStr = lipgloss.NewStyle().Foreground(t.Spinner).Render(m.spinner.View()+" rebase…")
+			statusStr = fmt.Sprintf("%-*s", statusWidth, statusStr)
 		} else if status.Pushing {
-			statusStr = dimStyle.Render(" " + m.spinner.View() + " pushing...")
+			statusStr = lipgloss.NewStyle().Foreground(t.Spinner).Render(m.spinner.View()+" push…")
+			statusStr = fmt.Sprintf("%-*s", statusWidth, statusStr)
 		} else if !status.HasUpstream {
-			statusStr = dimStyle.Render(" ○ no upstream")
+			statusStr = lipgloss.NewStyle().Foreground(t.NoRemote).Render(fmt.Sprintf("%-*s", statusWidth, "○ no remote"))
 		} else if status.IsSynced() {
-			statusStr = syncedStyle.Render(" ✓ synced")
+			statusStr = lipgloss.NewStyle().Bold(true).Foreground(t.Synced).Render(fmt.Sprintf("%-*s", statusWidth, "✓ synced"))
 		} else {
-			var parts []string
+			var statusParts []string
 			if status.Ahead > 0 {
-				parts = append(parts, aheadStyle.Render(fmt.Sprintf("↑%d", status.Ahead)))
+				statusParts = append(statusParts, lipgloss.NewStyle().Bold(true).Foreground(t.Ahead).Render(fmt.Sprintf("↑%d", status.Ahead)))
 			}
 			if status.Behind > 0 {
-				parts = append(parts, behindStyle.Render(fmt.Sprintf("↓%d", status.Behind)))
+				statusParts = append(statusParts, lipgloss.NewStyle().Bold(true).Foreground(t.Behind).Render(fmt.Sprintf("↓%d", status.Behind)))
 			}
-			statusStr = " " + strings.Join(parts, " ")
-		}
-
-		// Branch + dirty indicator
-		branch := ""
-		if status.Branch != "" {
-			dirty := ""
-			if status.Dirty {
-				dirty = aheadStyle.Render("*")
+			statusStr = strings.Join(statusParts, " ")
+			// Pad to fixed width
+			visWidth := lipgloss.Width(statusStr)
+			if visWidth < statusWidth {
+				statusStr += strings.Repeat(" ", statusWidth-visWidth)
 			}
-			branch = dimStyle.Render(" ["+status.Branch+"]") + dirty
 		}
+		parts = append(parts, statusStr)
 
-		// Last message (operation feedback)
-		msg := ""
-		if status.LastMessage != "" {
-			msg = " " + messageStyle.Render("← "+status.LastMessage)
-		}
-
-		// Last commit info
-		commitInfo := ""
-		if status.CommitSubject != "" && status.LastMessage == "" {
-			subject := status.CommitSubject
-			if len(subject) > 30 {
-				subject = subject[:27] + "..."
+		// Commit info - use remaining space
+		usedWidth := 1 + 1 + maxNameLen + 1 + maxBranchLen + 1 + 1 + statusWidth + 2
+		remainingWidth := innerWidth - usedWidth
+		if remainingWidth > 10 && status.CommitSubject != "" && status.Error == nil {
+			age := status.CommitAge
+			// Shorten age
+			ageParts := strings.Split(age, " ")
+			if len(ageParts) >= 2 {
+				age = ageParts[0] + string(ageParts[1][0])
 			}
-			commitInfo = " " + dimStyle.Render(status.CommitAge+": "+subject)
+			ageWidth := 5
+			subjectWidth := remainingWidth - ageWidth - 1
+			if subjectWidth > 0 {
+				subject := status.CommitSubject
+				if len(subject) > subjectWidth {
+					subject = subject[:subjectWidth-1] + "…"
+				}
+				commitInfo := fmt.Sprintf("%*s %s", ageWidth, age, subject)
+				parts = append(parts, lipgloss.NewStyle().Foreground(t.Dim).Render(commitInfo))
+			}
 		}
 
-		line := cursor + style.Render(name) + branch + statusStr + msg + commitInfo
-		b.WriteString(line + "\n")
+		line := strings.Join(parts, " ")
+		lines = append(lines, line)
 	}
 
-	// Help
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("241")).
-		MarginTop(1)
+	// Build help line
+	helpItems := []struct{ key, desc string }{
+		{"f", "fetch"},
+		{"⏎", "sync"},
+		{"p", "push"},
+		{"r", "refresh"},
+		{"g", "group"},
+		{"q", "quit"},
+	}
+	var helpParts []string
+	for _, item := range helpItems {
+		key := lipgloss.NewStyle().Bold(true).Foreground(t.HelpKey).Render(item.key)
+		desc := lipgloss.NewStyle().Foreground(t.HelpText).Render(item.desc)
+		helpParts = append(helpParts, key+" "+desc)
+	}
+	helpLine := strings.Join(helpParts, "  ")
 
-	help := "\n" + helpStyle.Render("  f: fetch all • enter: fetch+rebase • p: push • r: refresh • g: group • q: quit")
-	b.WriteString(help)
+	// Combine content
+	content := strings.Join(lines, "\n")
+
+	// Create box style
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Border).
+		Padding(1, 2).
+		Width(width - 2)
+
+	// Title style
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(t.Title).
+		MarginBottom(1)
+
+	// Final layout
+	var b strings.Builder
+	b.WriteString("\n")
+
+	innerContent := titleStyle.Render("gitpulse") + "\n\n" + content + "\n\n" + helpLine
+	b.WriteString(boxStyle.Render(innerContent))
+	b.WriteString("\n")
 
 	return b.String()
 }

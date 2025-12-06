@@ -12,6 +12,7 @@ import (
 
 type Config struct {
 	Repos []string `toml:"repos"`
+	Theme string   `toml:"theme,omitempty"`
 }
 
 type RepoConfig struct {
@@ -98,8 +99,11 @@ func Save(cfg *Config) error {
 
 func ExampleConfig() string {
 	return `# gitpulse configuration
-# List of repository paths to monitor
 
+# Color theme: dracula, nord, catppuccin, gruvbox, tokyonight, mono, jrpg-dark, jrpg-light
+theme = "dracula"
+
+# Repository paths to monitor
 repos = [
     "~/Developer/project1",
     "~/Developer/project2",
