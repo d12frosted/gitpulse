@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/d12frosted/gitpulse/internal/config"
@@ -46,13 +47,18 @@ type upstreamSetMsg struct {
 	err   error
 }
 
+type remoteAddedMsg struct {
+	index int
+	err   error
+}
+
 // ModalType represents the type of modal being shown
 type ModalType int
 
 const (
 	ModalNone ModalType = iota
 	ModalSetUpstream
-	ModalNoRemotes
+	ModalAddRemote
 )
 
 // UpstreamOption represents an option in the set upstream modal
@@ -80,6 +86,7 @@ type Model struct {
 	modalOptions    []UpstreamOption
 	modalCursor     int
 	modalAfterSetup bool // true if we should fetch/sync after setting upstream
+	textInput       textinput.Model
 }
 
 func NewModel(repos []config.RepoConfig, themeName string) Model {
@@ -88,6 +95,11 @@ func NewModel(repos []config.RepoConfig, themeName string) Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(theme.Spinner)
+
+	ti := textinput.New()
+	ti.Placeholder = "git@github.com:user/repo.git"
+	ti.CharLimit = 256
+	ti.Width = 40
 
 	statuses := make([]*git.RepoStatus, len(repos))
 	for i, repo := range repos {
@@ -98,11 +110,12 @@ func NewModel(repos []config.RepoConfig, themeName string) Model {
 	}
 
 	return Model{
-		repos:    repos,
-		statuses: statuses,
-		spinner:  s,
-		grouped:  true,
-		theme:    theme,
+		repos:     repos,
+		statuses:  statuses,
+		spinner:   s,
+		grouped:   true,
+		theme:     theme,
+		textInput: ti,
 	}
 }
 
@@ -317,11 +330,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshStatus(msg.index, m.repos[msg.index])
 
 	case remotesLoadedMsg:
+		// Clear fetching state
+		m.statuses[msg.index].Fetching = false
+
 		if len(msg.remotes) == 0 {
-			// No remotes configured
-			m.modalType = ModalNoRemotes
+			// No remotes configured - show add remote modal
+			m.modalType = ModalAddRemote
 			m.modalRepoIndex = msg.index
-			return m, nil
+			m.textInput.Reset()
+			m.textInput.Focus()
+			return m, textinput.Blink
 		}
 
 		// Build options from matching branches
@@ -364,12 +382,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(refreshCmd, m.fetchAndPull(msg.index))
 		}
 		return m, refreshCmd
+
+	case remoteAddedMsg:
+		if msg.err != nil {
+			m.statuses[msg.index].LastMessage = fmt.Sprintf("add remote failed: %v", msg.err)
+			return m, m.refreshStatus(msg.index, m.repos[msg.index])
+		}
+		// Remote added successfully - now fetch and show upstream options
+		m.statuses[msg.index].LastMessage = "remote added"
+		m.statuses[msg.index].Fetching = true
+		return m, m.fetchThenShowUpstream(msg.index)
 	}
 
 	return m, nil
 }
 
 func (m Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle add remote modal separately (needs text input)
+	if m.modalType == ModalAddRemote {
+		switch msg.String() {
+		case "esc":
+			m.modalType = ModalNone
+			m.textInput.Blur()
+			return m, nil
+		case "enter":
+			url := strings.TrimSpace(m.textInput.Value())
+			if url != "" {
+				m.modalType = ModalNone
+				m.textInput.Blur()
+				return m, m.addRemote(m.modalRepoIndex, "origin", url)
+			}
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.textInput, cmd = m.textInput.Update(msg)
+			return m, cmd
+		}
+	}
+
 	switch msg.String() {
 	case "esc", "q":
 		m.modalType = ModalNone
@@ -392,10 +442,6 @@ func (m Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.modalType = ModalNone
 			m.modalOptions = nil
 			return m, m.setUpstream(m.modalRepoIndex, opt.Remote, opt.Branch)
-		}
-		if m.modalType == ModalNoRemotes {
-			m.modalType = ModalNone
-			return m, nil
 		}
 	}
 
@@ -454,6 +500,29 @@ func (m *Model) showUpstreamModal(index int, afterSetup bool) tea.Cmd {
 	m.modalAfterSetup = afterSetup
 	m.modalCursor = 0
 	return m.loadRemotesForUpstream(index)
+}
+
+func (m *Model) addRemote(index int, name, url string) tea.Cmd {
+	path := m.repos[index].Path
+	return func() tea.Msg {
+		err := git.AddRemote(path, name, url)
+		return remoteAddedMsg{index: index, err: err}
+	}
+}
+
+func (m *Model) fetchThenShowUpstream(index int) tea.Cmd {
+	path := m.repos[index].Path
+	branch := m.statuses[index].Branch
+	return func() tea.Msg {
+		// Fetch from the new remote
+		if err := git.Fetch(path); err != nil {
+			return remotesLoadedMsg{index: index, remotes: nil, branches: nil}
+		}
+		// Now load remotes and branches
+		remotes, _ := git.ListRemotes(path)
+		branches, _ := git.ListRemoteBranches(path, branch)
+		return remotesLoadedMsg{index: index, remotes: remotes, branches: branches}
+	}
 }
 
 func (m Model) View() string {
@@ -677,12 +746,18 @@ func (m Model) renderModal(width int) string {
 		content = strings.Join(lines, "\n")
 		helpText = "↑/↓ select  ⏎ confirm  esc cancel"
 
-	case ModalNoRemotes:
+	case ModalAddRemote:
 		repoName := m.statuses[m.modalRepoIndex].Name
-		title = "No remotes configured"
-		content = lipgloss.NewStyle().Foreground(t.Dim).Render(
-			fmt.Sprintf("Repository '%s' has no remotes.\n\nAdd a remote with:\n  git remote add origin <url>", repoName))
-		helpText = "⏎/esc close"
+		title = fmt.Sprintf("Add remote for %s", repoName)
+
+		var lines []string
+		lines = append(lines, lipgloss.NewStyle().Foreground(t.Dim).Render(
+			"No remotes configured. Add origin:"))
+		lines = append(lines, "")
+		lines = append(lines, m.textInput.View())
+
+		content = strings.Join(lines, "\n")
+		helpText = "⏎ add remote  esc cancel"
 	}
 
 	// Build modal box
