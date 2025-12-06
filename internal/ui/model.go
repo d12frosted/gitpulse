@@ -337,13 +337,23 @@ func (m Model) View() string {
 			branch = dimStyle.Render(" ["+status.Branch+"]") + dirty
 		}
 
-		// Last message
+		// Last message (operation feedback)
 		msg := ""
 		if status.LastMessage != "" {
 			msg = " " + messageStyle.Render("← "+status.LastMessage)
 		}
 
-		line := cursor + style.Render(name) + branch + statusStr + msg
+		// Last commit info
+		commitInfo := ""
+		if status.CommitSubject != "" && status.LastMessage == "" {
+			subject := status.CommitSubject
+			if len(subject) > 30 {
+				subject = subject[:27] + "..."
+			}
+			commitInfo = " " + dimStyle.Render(status.CommitAge+": "+subject)
+		}
+
+		line := cursor + style.Render(name) + branch + statusStr + msg + commitInfo
 		b.WriteString(line + "\n")
 	}
 

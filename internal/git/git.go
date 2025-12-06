@@ -11,19 +11,21 @@ import (
 )
 
 type RepoStatus struct {
-	Path         string
-	Name         string
-	Branch       string
-	Upstream     string
-	Ahead        int
-	Behind       int
-	Dirty        bool
-	HasUpstream  bool
-	Error        error
-	Fetching     bool
-	Rebasing     bool
-	Pushing      bool
-	LastMessage  string
+	Path          string
+	Name          string
+	Branch        string
+	Upstream      string
+	Ahead         int
+	Behind        int
+	Dirty         bool
+	HasUpstream   bool
+	Error         error
+	Fetching      bool
+	Rebasing      bool
+	Pushing       bool
+	LastMessage   string
+	CommitSubject string
+	CommitAge     string
 }
 
 func (s *RepoStatus) IsSynced() bool {
@@ -77,6 +79,16 @@ func GetStatus(path, name string) *RepoStatus {
 	// Check for uncommitted changes
 	porcelain, _ := runGit(path, "status", "--porcelain")
 	status.Dirty = strings.TrimSpace(porcelain) != ""
+
+	// Get last commit info
+	commitInfo, err := runGit(path, "log", "-1", "--format=%s|%cr")
+	if err == nil {
+		parts := strings.SplitN(strings.TrimSpace(commitInfo), "|", 2)
+		if len(parts) == 2 {
+			status.CommitSubject = parts[0]
+			status.CommitAge = parts[1]
+		}
+	}
 
 	// Get upstream
 	upstream, err := runGit(path, "rev-parse", "--abbrev-ref", "@{upstream}")
