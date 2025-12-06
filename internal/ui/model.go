@@ -666,7 +666,7 @@ func (m Model) View() string {
 			statusStr = lipgloss.NewStyle().Foreground(t.Spinner).Render(m.spinner.View()+" push…")
 			statusStr = fmt.Sprintf("%-*s", statusWidth, statusStr)
 		} else if !status.HasUpstream {
-			statusStr = lipgloss.NewStyle().Foreground(t.NoRemote).Render(fmt.Sprintf("%-*s", statusWidth, "○ no remote"))
+			statusStr = lipgloss.NewStyle().Foreground(t.NoRemote).Render(fmt.Sprintf("%-*s", statusWidth, "○ no upstream"))
 		} else if status.IsSynced() {
 			statusStr = lipgloss.NewStyle().Bold(true).Foreground(t.Synced).Render(fmt.Sprintf("%-*s", statusWidth, "✓ synced"))
 		} else {

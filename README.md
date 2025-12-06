@@ -86,5 +86,5 @@ Available themes:
 | `↑N` | N commits ahead of upstream |
 | `↓N` | N commits behind upstream |
 | `✓ synced` | Up to date with upstream |
-| `○ no remote` | No upstream configured |
+| `○ no upstream` | No tracking branch configured |
 | `✗ error` | Error accessing repo |
