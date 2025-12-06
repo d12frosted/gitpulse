@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -43,6 +44,7 @@ type Model struct {
 	width       int
 	height      int
 	fetchingAll bool
+	grouped     bool
 	quitting    bool
 }
 
@@ -64,6 +66,51 @@ func NewModel(repos []config.RepoConfig) Model {
 		statuses: statuses,
 		spinner:  s,
 	}
+}
+
+// statusPriority returns a sort priority for a repo status
+// Lower values appear first when grouped
+func statusPriority(s *git.RepoStatus) int {
+	if s.Error != nil {
+		return 0 // Errors first
+	}
+	if s.NeedsPull() {
+		return 1 // Needs pull (behind)
+	}
+	if s.NeedsPush() {
+		return 2 // Needs push (ahead)
+	}
+	if s.IsSynced() {
+		return 3 // Synced
+	}
+	return 4 // No upstream
+}
+
+// displayOrder returns indices in display order (sorted if grouped)
+func (m *Model) displayOrder() []int {
+	indices := make([]int, len(m.statuses))
+	for i := range indices {
+		indices[i] = i
+	}
+
+	if m.grouped {
+		sort.Slice(indices, func(a, b int) bool {
+			pa := statusPriority(m.statuses[indices[a]])
+			pb := statusPriority(m.statuses[indices[b]])
+			if pa != pb {
+				return pa < pb
+			}
+			// Same priority: sort by name
+			return m.statuses[indices[a]].Name < m.statuses[indices[b]].Name
+		})
+	}
+
+	return indices
+}
+
+// selectedIndex returns the actual repo index for the current cursor position
+func (m *Model) selectedIndex() int {
+	return m.displayOrder()[m.cursor]
 }
 
 func (m Model) Init() tea.Cmd {
@@ -116,18 +163,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter", " ":
 			// Fetch + pull current repo
-			if !m.statuses[m.cursor].Fetching && !m.statuses[m.cursor].Rebasing {
-				m.statuses[m.cursor].Fetching = true
-				m.statuses[m.cursor].LastMessage = ""
-				return m, m.fetchAndPull(m.cursor)
+			idx := m.selectedIndex()
+			if !m.statuses[idx].Fetching && !m.statuses[idx].Rebasing {
+				m.statuses[idx].Fetching = true
+				m.statuses[idx].LastMessage = ""
+				return m, m.fetchAndPull(idx)
 			}
 
 		case "p":
 			// Push current repo
-			if !m.statuses[m.cursor].Pushing && m.statuses[m.cursor].NeedsPush() {
-				m.statuses[m.cursor].Pushing = true
-				m.statuses[m.cursor].LastMessage = ""
-				return m, m.pushRepo(m.cursor)
+			idx := m.selectedIndex()
+			if !m.statuses[idx].Pushing && m.statuses[idx].NeedsPush() {
+				m.statuses[idx].Pushing = true
+				m.statuses[idx].LastMessage = ""
+				return m, m.pushRepo(idx)
 			}
 
 		case "r":
@@ -137,6 +186,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.refreshStatus(i, repo))
 			}
 			return m, tea.Batch(cmds...)
+
+		case "g":
+			// Toggle grouping by status
+			m.grouped = !m.grouped
 		}
 
 	case tea.WindowSizeMsg:
@@ -291,10 +344,12 @@ func (m Model) View() string {
 	}
 
 	// Repos list
-	for i, status := range m.statuses {
+	order := m.displayOrder()
+	for displayIdx, repoIdx := range order {
+		status := m.statuses[repoIdx]
 		cursor := "  "
 		style := normalStyle
-		if i == m.cursor {
+		if displayIdx == m.cursor {
 			cursor = "▸ "
 			style = selectedStyle
 		}
@@ -362,7 +417,7 @@ func (m Model) View() string {
 		Foreground(lipgloss.Color("241")).
 		MarginTop(1)
 
-	help := "\n" + helpStyle.Render("  f: fetch all • enter: fetch+rebase • p: push • r: refresh • q: quit")
+	help := "\n" + helpStyle.Render("  f: fetch all • enter: fetch+rebase • p: push • r: refresh • g: group • q: quit")
 	b.WriteString(help)
 
 	return b.String()
