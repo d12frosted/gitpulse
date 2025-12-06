@@ -35,6 +35,32 @@ type pushCompleteMsg struct {
 
 type fetchAllCompleteMsg struct{}
 
+type remotesLoadedMsg struct {
+	index    int
+	remotes  []git.Remote
+	branches []git.RemoteBranch
+}
+
+type upstreamSetMsg struct {
+	index int
+	err   error
+}
+
+// ModalType represents the type of modal being shown
+type ModalType int
+
+const (
+	ModalNone ModalType = iota
+	ModalSetUpstream
+	ModalNoRemotes
+)
+
+// UpstreamOption represents an option in the set upstream modal
+type UpstreamOption struct {
+	Remote string
+	Branch string
+}
+
 // Model
 type Model struct {
 	repos       []config.RepoConfig
@@ -47,6 +73,13 @@ type Model struct {
 	grouped     bool
 	quitting    bool
 	theme       Theme
+
+	// Modal state
+	modalType       ModalType
+	modalRepoIndex  int
+	modalOptions    []UpstreamOption
+	modalCursor     int
+	modalAfterSetup bool // true if we should fetch/sync after setting upstream
 }
 
 func NewModel(repos []config.RepoConfig, themeName string) Model {
@@ -139,6 +172,11 @@ func (m *Model) refreshStatus(index int, repo config.RepoConfig) tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Handle modal input first
+		if m.modalType != ModalNone {
+			return m.handleModalKey(msg)
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			m.quitting = true
@@ -169,11 +207,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter", " ":
 			// Fetch + pull current repo
 			idx := m.selectedIndex()
-			if !m.statuses[idx].Fetching && !m.statuses[idx].Rebasing {
-				m.statuses[idx].Fetching = true
-				m.statuses[idx].LastMessage = ""
-				return m, m.fetchAndPull(idx)
+			status := m.statuses[idx]
+			if status.Fetching || status.Rebasing {
+				return m, nil
 			}
+			// DWIM: If no upstream, show modal to set one
+			if !status.HasUpstream && status.Error == nil {
+				return m, m.showUpstreamModal(idx, true)
+			}
+			status.Fetching = true
+			status.LastMessage = ""
+			return m, m.fetchAndPull(idx)
 
 		case "p":
 			// Push current repo
@@ -195,6 +239,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "g":
 			// Toggle grouping by status
 			m.grouped = !m.grouped
+
+		case "u":
+			// Set upstream for current repo
+			idx := m.selectedIndex()
+			status := m.statuses[idx]
+			if !status.HasUpstream && status.Error == nil {
+				return m, m.showUpstreamModal(idx, false)
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -263,6 +315,88 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, m.refreshStatus(msg.index, m.repos[msg.index])
+
+	case remotesLoadedMsg:
+		if len(msg.remotes) == 0 {
+			// No remotes configured
+			m.modalType = ModalNoRemotes
+			m.modalRepoIndex = msg.index
+			return m, nil
+		}
+
+		// Build options from matching branches
+		var options []UpstreamOption
+		branch := m.statuses[msg.index].Branch
+
+		// First, add exact matches (remote has same branch name)
+		for _, rb := range msg.branches {
+			options = append(options, UpstreamOption{Remote: rb.Remote, Branch: rb.Branch})
+		}
+
+		// If no exact matches, suggest creating on each remote
+		if len(options) == 0 {
+			for _, remote := range msg.remotes {
+				options = append(options, UpstreamOption{Remote: remote.Name, Branch: branch})
+			}
+		}
+
+		if len(options) == 0 {
+			m.statuses[msg.index].LastMessage = "no remote branches found"
+			return m, nil
+		}
+
+		m.modalType = ModalSetUpstream
+		m.modalOptions = options
+		m.modalCursor = 0
+		return m, nil
+
+	case upstreamSetMsg:
+		if msg.err != nil {
+			m.statuses[msg.index].LastMessage = fmt.Sprintf("set upstream failed: %v", msg.err)
+		} else {
+			m.statuses[msg.index].LastMessage = "upstream set"
+		}
+		// Refresh status and optionally continue with sync
+		refreshCmd := m.refreshStatus(msg.index, m.repos[msg.index])
+		if m.modalAfterSetup && msg.err == nil {
+			// Continue with fetch+pull after setting upstream
+			m.statuses[msg.index].Fetching = true
+			return m, tea.Batch(refreshCmd, m.fetchAndPull(msg.index))
+		}
+		return m, refreshCmd
+	}
+
+	return m, nil
+}
+
+func (m Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.modalType = ModalNone
+		m.modalOptions = nil
+		return m, nil
+
+	case "up", "k":
+		if m.modalCursor > 0 {
+			m.modalCursor--
+		}
+
+	case "down", "j":
+		if m.modalCursor < len(m.modalOptions)-1 {
+			m.modalCursor++
+		}
+
+	case "enter", " ":
+		if m.modalType == ModalSetUpstream && len(m.modalOptions) > 0 {
+			opt := m.modalOptions[m.modalCursor]
+			m.modalType = ModalNone
+			m.modalOptions = nil
+			return m, m.setUpstream(m.modalRepoIndex, opt.Remote, opt.Branch)
+		}
+		if m.modalType == ModalNoRemotes {
+			m.modalType = ModalNone
+			return m, nil
+		}
 	}
 
 	return m, nil
@@ -297,6 +431,31 @@ func (m *Model) pushRepo(index int) tea.Cmd {
 	}
 }
 
+func (m *Model) loadRemotesForUpstream(index int) tea.Cmd {
+	path := m.repos[index].Path
+	branch := m.statuses[index].Branch
+	return func() tea.Msg {
+		remotes, _ := git.ListRemotes(path)
+		branches, _ := git.ListRemoteBranches(path, branch)
+		return remotesLoadedMsg{index: index, remotes: remotes, branches: branches}
+	}
+}
+
+func (m *Model) setUpstream(index int, remote, branch string) tea.Cmd {
+	path := m.repos[index].Path
+	return func() tea.Msg {
+		err := git.SetUpstream(path, remote, branch)
+		return upstreamSetMsg{index: index, err: err}
+	}
+}
+
+func (m *Model) showUpstreamModal(index int, afterSetup bool) tea.Cmd {
+	m.modalRepoIndex = index
+	m.modalAfterSetup = afterSetup
+	m.modalCursor = 0
+	return m.loadRemotesForUpstream(index)
+}
+
 func (m Model) View() string {
 	if m.quitting {
 		return ""
@@ -311,6 +470,11 @@ func (m Model) View() string {
 
 	// Theme colors
 	t := m.theme
+
+	// If modal is active, render it over the main view
+	if m.modalType != ModalNone {
+		return m.renderModal(width)
+	}
 
 	// Calculate column widths
 	maxNameLen := 0
@@ -436,6 +600,7 @@ func (m Model) View() string {
 		{"f", "fetch"},
 		{"⏎", "sync"},
 		{"p", "push"},
+		{"u", "upstream"},
 		{"r", "refresh"},
 		{"g", "group"},
 		{"q", "quit"},
@@ -471,6 +636,86 @@ func (m Model) View() string {
 	innerContent := titleStyle.Render("gitpulse") + "\n\n" + content + "\n\n" + helpLine
 	b.WriteString(boxStyle.Render(innerContent))
 	b.WriteString("\n")
+
+	return b.String()
+}
+
+func (m Model) renderModal(width int) string {
+	t := m.theme
+
+	modalWidth := 50
+	if width > 60 && modalWidth > width-10 {
+		modalWidth = width - 10
+	}
+
+	var title string
+	var content string
+	var helpText string
+
+	switch m.modalType {
+	case ModalSetUpstream:
+		repoName := m.statuses[m.modalRepoIndex].Name
+		branch := m.statuses[m.modalRepoIndex].Branch
+		title = fmt.Sprintf("Set upstream for %s", repoName)
+
+		var lines []string
+		lines = append(lines, lipgloss.NewStyle().Foreground(t.Dim).Render(
+			fmt.Sprintf("Branch: %s", branch)))
+		lines = append(lines, "")
+
+		for i, opt := range m.modalOptions {
+			cursor := "  "
+			style := lipgloss.NewStyle().Foreground(t.RepoName)
+			if i == m.modalCursor {
+				cursor = "▸ "
+				style = lipgloss.NewStyle().Bold(true).Foreground(t.Selected)
+			}
+			optStr := fmt.Sprintf("%s/%s", opt.Remote, opt.Branch)
+			lines = append(lines, cursor+style.Render(optStr))
+		}
+
+		content = strings.Join(lines, "\n")
+		helpText = "↑/↓ select  ⏎ confirm  esc cancel"
+
+	case ModalNoRemotes:
+		repoName := m.statuses[m.modalRepoIndex].Name
+		title = "No remotes configured"
+		content = lipgloss.NewStyle().Foreground(t.Dim).Render(
+			fmt.Sprintf("Repository '%s' has no remotes.\n\nAdd a remote with:\n  git remote add origin <url>", repoName))
+		helpText = "⏎/esc close"
+	}
+
+	// Build modal box
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(t.Title)
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(t.HelpText)
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Border).
+		Padding(1, 2).
+		Width(modalWidth)
+
+	innerContent := titleStyle.Render(title) + "\n\n" + content + "\n\n" + helpStyle.Render(helpText)
+
+	// Center the modal
+	var b strings.Builder
+	b.WriteString("\n\n")
+	modalBox := boxStyle.Render(innerContent)
+
+	// Add left padding to center
+	leftPad := (width - modalWidth) / 2
+	if leftPad > 0 {
+		padding := strings.Repeat(" ", leftPad)
+		for _, line := range strings.Split(modalBox, "\n") {
+			b.WriteString(padding + line + "\n")
+		}
+	} else {
+		b.WriteString(modalBox)
+	}
 
 	return b.String()
 }

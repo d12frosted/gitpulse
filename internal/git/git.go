@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -127,6 +128,103 @@ func Pull(path string) error {
 
 func Push(path string) error {
 	_, err := runGit(path, "push")
+	return err
+}
+
+// Remote represents a git remote
+type Remote struct {
+	Name string
+	URL  string
+}
+
+// ListRemotes returns all configured remotes for a repository
+func ListRemotes(path string) ([]Remote, error) {
+	output, err := runGit(path, "remote", "-v")
+	if err != nil {
+		return nil, err
+	}
+
+	remoteMap := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			// Only take fetch URLs (avoid duplicates from push)
+			if len(parts) >= 3 && strings.Contains(parts[2], "fetch") {
+				remoteMap[parts[0]] = parts[1]
+			} else if _, exists := remoteMap[parts[0]]; !exists {
+				remoteMap[parts[0]] = parts[1]
+			}
+		}
+	}
+
+	var remotes []Remote
+	for name, url := range remoteMap {
+		remotes = append(remotes, Remote{Name: name, URL: url})
+	}
+
+	// Sort by name for consistent ordering
+	sort.Slice(remotes, func(i, j int) bool {
+		// "origin" should come first
+		if remotes[i].Name == "origin" {
+			return true
+		}
+		if remotes[j].Name == "origin" {
+			return false
+		}
+		return remotes[i].Name < remotes[j].Name
+	})
+
+	return remotes, nil
+}
+
+// RemoteBranch represents a branch on a remote
+type RemoteBranch struct {
+	Remote string
+	Branch string
+}
+
+// ListRemoteBranches returns branches available on remotes that match the given branch name
+func ListRemoteBranches(path, branchName string) ([]RemoteBranch, error) {
+	// First fetch to ensure we have up-to-date remote info
+	output, err := runGit(path, "branch", "-r")
+	if err != nil {
+		return nil, err
+	}
+
+	var branches []RemoteBranch
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, "->") {
+			continue
+		}
+		// Parse "origin/main" format
+		parts := strings.SplitN(line, "/", 2)
+		if len(parts) == 2 {
+			remote := parts[0]
+			branch := parts[1]
+			// Match exact branch name or show all if branchName is empty
+			if branchName == "" || branch == branchName {
+				branches = append(branches, RemoteBranch{Remote: remote, Branch: branch})
+			}
+		}
+	}
+
+	return branches, nil
+}
+
+// SetUpstream sets the upstream branch for the current branch
+func SetUpstream(path, remote, branch string) error {
+	upstream := remote + "/" + branch
+	_, err := runGit(path, "branch", "--set-upstream-to="+upstream)
+	return err
+}
+
+// AddRemote adds a new remote to the repository
+func AddRemote(path, name, url string) error {
+	_, err := runGit(path, "remote", "add", name, url)
 	return err
 }
 
