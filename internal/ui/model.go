@@ -366,6 +366,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pullCompleteMsg:
 		if msg.index < len(m.statuses) {
+			m.statuses[msg.index].Fetching = false
 			m.statuses[msg.index].Rebasing = false
 			if msg.err != nil {
 				m.statuses[msg.index].LastMessage = fmt.Sprintf("pull failed: %v", msg.err)
