@@ -157,8 +157,8 @@ func (m *Model) displayOrder() []int {
 			if pa != pb {
 				return pa < pb
 			}
-			// Same priority: sort by name
-			return m.statuses[indices[a]].Name < m.statuses[indices[b]].Name
+			// Same priority: sort by last commit time (newer first)
+			return m.statuses[indices[a]].CommitTime > m.statuses[indices[b]].CommitTime
 		})
 	}
 

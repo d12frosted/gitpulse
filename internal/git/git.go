@@ -27,6 +27,7 @@ type RepoStatus struct {
 	LastMessage   string
 	CommitSubject string
 	CommitAge     string
+	CommitTime    int64 // Unix timestamp for sorting
 }
 
 func (s *RepoStatus) IsSynced() bool {
@@ -82,12 +83,15 @@ func GetStatus(path, name string) *RepoStatus {
 	status.Dirty = strings.TrimSpace(porcelain) != ""
 
 	// Get last commit info
-	commitInfo, err := runGit(path, "log", "-1", "--format=%s|%cr")
+	commitInfo, err := runGit(path, "log", "-1", "--format=%s|%cr|%ct")
 	if err == nil {
-		parts := strings.SplitN(strings.TrimSpace(commitInfo), "|", 2)
-		if len(parts) == 2 {
+		parts := strings.SplitN(strings.TrimSpace(commitInfo), "|", 3)
+		if len(parts) >= 2 {
 			status.CommitSubject = parts[0]
 			status.CommitAge = parts[1]
+		}
+		if len(parts) == 3 {
+			status.CommitTime, _ = strconv.ParseInt(parts[2], 10, 64)
 		}
 	}
 
