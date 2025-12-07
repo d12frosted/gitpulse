@@ -2,6 +2,8 @@
 
 A terminal UI for monitoring and syncing multiple git repositories.
 
+![](./images/gitpulse.png)
+
 ## Features
 
 - Monitor status of multiple repos at a glance
