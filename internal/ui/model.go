@@ -95,6 +95,11 @@ type Model struct {
 	textInput       textinput.Model
 }
 
+// formatMessage adds a timestamp prefix to operation messages
+func formatMessage(msg string) string {
+	return fmt.Sprintf("[%s] %s", time.Now().Format("02/01/06 15:04:05"), msg)
+}
+
 func NewModel(repos []config.RepoConfig, themeName string) Model {
 	theme := GetTheme(themeName)
 
@@ -374,7 +379,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.index < len(m.statuses) {
 			m.statuses[msg.index].Fetching = false
 			if msg.err != nil {
-				m.statuses[msg.index].LastMessage = fmt.Sprintf("fetch failed: %v", msg.err)
+				m.statuses[msg.index].LastMessage = formatMessage(fmt.Sprintf("fetch failed: %v", msg.err))
 			}
 		}
 		// Check if all fetches are done
@@ -396,9 +401,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statuses[msg.index].Fetching = false
 			m.statuses[msg.index].Rebasing = false
 			if msg.err != nil {
-				m.statuses[msg.index].LastMessage = fmt.Sprintf("pull failed: %v", msg.err)
+				m.statuses[msg.index].LastMessage = formatMessage(fmt.Sprintf("pull failed: %v", msg.err))
 			} else {
-				m.statuses[msg.index].LastMessage = "synced"
+				m.statuses[msg.index].LastMessage = formatMessage("synced")
 			}
 		}
 		return m, m.refreshStatus(msg.index, m.repos[msg.index])
@@ -407,9 +412,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.index < len(m.statuses) {
 			m.statuses[msg.index].Pushing = false
 			if msg.err != nil {
-				m.statuses[msg.index].LastMessage = fmt.Sprintf("push failed: %v", msg.err)
+				m.statuses[msg.index].LastMessage = formatMessage(fmt.Sprintf("push failed: %v", msg.err))
 			} else {
-				m.statuses[msg.index].LastMessage = "pushed"
+				m.statuses[msg.index].LastMessage = formatMessage("pushed")
 			}
 		}
 		return m, m.refreshStatus(msg.index, m.repos[msg.index])
@@ -450,9 +455,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case upstreamSetMsg:
 		if msg.err != nil {
-			m.statuses[msg.index].LastMessage = fmt.Sprintf("set upstream failed: %v", msg.err)
+			m.statuses[msg.index].LastMessage = formatMessage(fmt.Sprintf("set upstream failed: %v", msg.err))
 		} else {
-			m.statuses[msg.index].LastMessage = "upstream set"
+			m.statuses[msg.index].LastMessage = formatMessage("upstream set")
 		}
 		// Refresh status and optionally continue with sync
 		refreshCmd := m.refreshStatus(msg.index, m.repos[msg.index])
@@ -465,11 +470,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteAddedMsg:
 		if msg.err != nil {
-			m.statuses[msg.index].LastMessage = fmt.Sprintf("add remote failed: %v", msg.err)
+			m.statuses[msg.index].LastMessage = formatMessage(fmt.Sprintf("add remote failed: %v", msg.err))
 			return m, m.refreshStatus(msg.index, m.repos[msg.index])
 		}
 		// Remote added successfully - now fetch and show upstream options
-		m.statuses[msg.index].LastMessage = "remote added"
+		m.statuses[msg.index].LastMessage = formatMessage("remote added")
 		m.statuses[msg.index].Fetching = true
 		return m, m.fetchThenShowUpstream(msg.index)
 	}
@@ -731,25 +736,39 @@ func (m Model) View() string {
 		}
 		parts = append(parts, statusStr)
 
-		// Commit info - use remaining space
+		// Commit info or last message - use remaining space
 		usedWidth := 1 + 1 + maxNameLen + 1 + maxBranchLen + 1 + 1 + statusWidth + 2
 		remainingWidth := innerWidth - usedWidth
-		if remainingWidth > 10 && status.CommitSubject != "" && status.Error == nil {
-			age := status.CommitAge
-			// Shorten age
-			ageParts := strings.Split(age, " ")
-			if len(ageParts) >= 2 {
-				age = ageParts[0] + string(ageParts[1][0])
-			}
-			ageWidth := 5
-			subjectWidth := remainingWidth - ageWidth - 1
-			if subjectWidth > 0 {
-				subject := status.CommitSubject
-				if len(subject) > subjectWidth {
-					subject = subject[:subjectWidth-1] + "…"
+		if remainingWidth > 10 && status.Error == nil {
+			if status.LastMessage != "" {
+				// Show last operation message (errors, sync status, etc.)
+				msg := status.LastMessage
+				if len(msg) > remainingWidth {
+					msg = msg[:remainingWidth-1] + "…"
 				}
-				commitInfo := fmt.Sprintf("%*s %s", ageWidth, age, subject)
-				parts = append(parts, lipgloss.NewStyle().Foreground(t.Dim).Render(commitInfo))
+				// Use error color for failure messages, dim for success
+				msgStyle := lipgloss.NewStyle().Foreground(t.Dim)
+				if strings.Contains(status.LastMessage, "failed") {
+					msgStyle = lipgloss.NewStyle().Foreground(t.Error)
+				}
+				parts = append(parts, msgStyle.Render(msg))
+			} else if status.CommitSubject != "" {
+				age := status.CommitAge
+				// Shorten age
+				ageParts := strings.Split(age, " ")
+				if len(ageParts) >= 2 {
+					age = ageParts[0] + string(ageParts[1][0])
+				}
+				ageWidth := 5
+				subjectWidth := remainingWidth - ageWidth - 1
+				if subjectWidth > 0 {
+					subject := status.CommitSubject
+					if len(subject) > subjectWidth {
+						subject = subject[:subjectWidth-1] + "…"
+					}
+					commitInfo := fmt.Sprintf("%*s %s", ageWidth, age, subject)
+					parts = append(parts, lipgloss.NewStyle().Foreground(t.Dim).Render(commitInfo))
+				}
 			}
 		}
 
