@@ -126,7 +126,7 @@ func Fetch(path string) error {
 }
 
 func Pull(path string) error {
-	_, err := runGit(path, "pull", "--rebase")
+	_, err := runGit(path, "pull", "--rebase", "--autostash")
 	return err
 }
 
